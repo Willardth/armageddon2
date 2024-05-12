@@ -40,6 +40,7 @@ variable "firewall_rule_map" {
     target_tags = list(string)
     ports = list(string)
     protocol = string
+    source_ranges = list(string)
   }))
   default = {
     america = {
@@ -48,6 +49,8 @@ variable "firewall_rule_map" {
       target_tags = ["ftp-server", "ssh-server", "http-server"]
       ports = ["22", "20", "80"]
       protocol = "tcp"
+      source_ranges = ["0.0.0.0/0", "35.235.240.0/20"]
+
     }
     asia = {
       firewall_rule_name = "rdp"
@@ -55,13 +58,15 @@ variable "firewall_rule_map" {
       target_tags = ["rdp-server"]
       ports = ["3389"]
       protocol = "tcp"
+      source_ranges = ["0.0.0.0/0"]
     }
     europe = {
       firewall_rule_name = "zero"
       network_name = "europe-terraform-vpc"
-      target_tags = []
+      target_tags = ["zero-server"]
       ports = []
       protocol = "tcp"
+      source_ranges = ["0.0.0.0/0"]
     }
   }
 }
@@ -99,7 +104,7 @@ variable "instance_map" {
     europe = {
       instance_name = "europe-instance"
       zone = "europe-west1-b"
-      tags = []
+      tags = ["zero-server"]
       network = "europe-terraform-vpc"
       subnet_name = "europe-subnet"
     }

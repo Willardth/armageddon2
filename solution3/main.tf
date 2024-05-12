@@ -14,6 +14,7 @@ provider "google" {
   credentials = "love-terraform-project-cac637d5eadc.json"
 }
 
+# Creating VPC Networks
 resource "google_compute_network" "america-vpc-network" {
   project = "love-terraform-project"
   name = "america-terraform-vpc"
@@ -35,7 +36,7 @@ resource "google_compute_network" "europe-vpc-network" {
   mtu = 1460
 }
 
-
+# Creating subnets for each network
 resource "google_compute_subnetwork" "subnet" {
   for_each = var.subnet_map
 
@@ -48,6 +49,7 @@ resource "google_compute_subnetwork" "subnet" {
   depends_on = [google_compute_network.america-vpc-network, google_compute_network.asia-vpc-network, google_compute_network.europe-vpc-network]
 }
 
+# Creating firewall rules for each network through tags targeting instance
 resource "google_compute_firewall" "firewall_rules" {
   for_each = var.firewall_rule_map
 
@@ -62,11 +64,12 @@ resource "google_compute_firewall" "firewall_rules" {
     protocol = each.value.protocol
     
   }
-  source_ranges =  ["0.0.0.0/0"]
+  source_ranges = each.value.source_ranges
 
   depends_on = [google_compute_network.america-vpc-network, google_compute_network.asia-vpc-network, google_compute_network.europe-vpc-network,]
 }
 
+# Creating instances
 resource "google_compute_instance" "instance" {
   for_each = var.instance_map
 
@@ -90,16 +93,17 @@ resource "google_compute_instance" "instance" {
   } 
     }
   metadata = {
-    startup-script ="#Thanks to Remo\n!/bin/bash\n# Update and install Apache2\napt update\napt install -y apache2\n\n# Start and enable Apache2\nsystemctl start apache2\nsystemctl enable apache2\n\n# GCP Metadata server base URL and header\nMETADATA_URL='http://metadata.google.internal/computeMetadata/v1'\nMETADATA_FLAVOR_HEADER='Metadata-Flavor: Google'\n\n# Use curl to fetch instance metadata\nlocal_ipv4=$(curl -H '$${METADATA_FLAVOR_HEADER}' -s '$${METADATA_URL}/instance/network-interfaces/0/ip')\nzone=$$(curl -H '$${METADATA_FLAVOR_HEADER}' -s '$${METADATA_URL}/instance/zone')\nproject_id=$(curl -H '$${METADATA_FLAVOR_HEADER}' -s '$${METADATA_URL}/project/project-id')\nnetwork_tags=$(curl -H '$${METADATA_FLAVOR_HEADER}' -s '$${METADATA_URL}/instance/tags')\n\n# Create a simple HTML page and include instance details\ncat <<EOF > /var/www/html/index.html\n<html><body>\n<h2>Welcome to your custom website.</h2>\n<h3>Created with a direct input startup script!</h3>\n<p><b>Instance Name:</b> $(hostname -f)</p>\n<p><b>Instance Private IP Address: </b> $local_ipv4</p>\n<p><b>Zone: </b> $zone</p>\n<p><b>Project ID:</b> $project_id</p>\n<p><b>Network Tags:</b> $network_tags</p>\n</body></html>\nEOF\n"
+    startup-script = file("${path.module}/remo-script.sh")
 
  }
 
  depends_on = [google_compute_network.america-vpc-network, google_compute_network.asia-vpc-network, google_compute_network.europe-vpc-network, google_compute_subnetwork.subnet, google_compute_firewall.firewall_rules]
 }
 
+# Network Peering between America and Europe
 resource "google_compute_network_peering" "america-to-europe" {
-  name         = "america-to-europe"
-  network      = google_compute_network.america-vpc-network.self_link
+  name = "america-to-europe"
+  network = google_compute_network.america-vpc-network.self_link
   peer_network = google_compute_network.europe-vpc-network.self_link
 
 
@@ -109,93 +113,142 @@ resource "google_compute_network_peering" "america-to-europe" {
 
 
 resource "google_compute_network_peering" "europe-to-america" {
-  name         = "europe-to-america"
-  network      = google_compute_network.europe-vpc-network.self_link
+  name = "europe-to-america"
+  network = google_compute_network.europe-vpc-network.self_link
   peer_network = google_compute_network.america-vpc-network.self_link
 
 
   depends_on = [google_compute_subnetwork.subnet, google_compute_firewall.firewall_rules]
 }
 
-resource "google_compute_ha_vpn_gateway" "hq_gateway" {
-  region   = "asia-northeast3"
-  name     = "asia-vpn"
-  network  = google_compute_network.asia-vpc-network.id
+# Asia VPN Gateway
+resource "google_compute_vpn_gateway" "asia_gateway" {
+  name = "asia-vpn"
+  region = "asia-northeast3"
+  network = google_compute_network.asia-vpc-network.id
 }
 
-resource "google_compute_external_vpn_gateway" "external_gateway" {
-  name            = "external-gateway"
-  redundancy_type = "SINGLE_IP_INTERNALLY_REDUNDANT"
-  description     = "An externally managed VPN gateway"
-  interface {
-    id         = 0
-    ip_address = "8.8.8.8"
+# Europe VPN Gateway
+resource "google_compute_vpn_gateway" "hq_gateway" {
+  name = "europe-vpn"
+  region = "europe-west1"
+  network = google_compute_network.europe-vpc-network.id
   }
+
+# External Static IP addresses for VPN
+resource "google_compute_address" "asia_external_ip" {
+  name = "asia-vpn-external-ip"
+  region = "asia-northeast3"
 }
 
-resource "google_compute_router" "router1" {
-  name     = "asia-vpn-router1"
-  network  = google_compute_network.asia-vpc-network.id
-  region   = "asia-northeast3"
-  bgp {
-    asn = 64514
-  }
+resource "google_compute_address" "europe_external_ip" {
+  name = "europe-vpn-external-ip"
+  region = "europe-west1"
+}
+
+# VPN Tunnel from Asia to HQ
+data "google_secret_manager_secret_version" "vpn_secret" {
+  secret = "vpn-shared-secret"
+  version = "latest"
 }
 
 resource "google_compute_vpn_tunnel" "tunnel1" {
-  name                            = "hq-vpn-tunnel1"
-  region                          = "asia-northeast3"
-  vpn_gateway                     = google_compute_ha_vpn_gateway.hq_gateway.id
-  peer_external_gateway           = google_compute_external_vpn_gateway.external_gateway.id
-  peer_external_gateway_interface = 0
-  shared_secret                   = "a secret message"
-  router                          = google_compute_router.router1.id
-  vpn_gateway_interface           = 0
+  name = "hq-vpn-tunnel1"
+  region = "asia-northeast3"
+  vpn_gateway = google_compute_vpn_gateway.asia_gateway.id
+  peer_ip = google_compute_address.europe_external_ip.address
+  shared_secret = data.google_secret_manager_secret_version.vpn_secret.secret_data
+  ike_version = 2
+  
+  local_traffic_selector = ["192.168.5.0/24"]
+  remote_traffic_selector = ["10.155.8.0/24"]
+
+  depends_on = [google_compute_forwarding_rule.asia_esp, google_compute_forwarding_rule.asia_udp500, google_compute_forwarding_rule.asia_udp4500]
 }
 
+# Route for Asia to HQ
+resource "google_compute_route" "asia_to_hq" {
+  name     = "asia-to-hq-route"
+  network  = google_compute_network.asia-vpc-network.id
+  dest_range = "10.155.8.0/24"
+  next_hop_vpn_tunnel = google_compute_vpn_tunnel.tunnel1.id
+  priority = 1000
+}
+
+# Forwarding Rules for Asia VPN
+resource "google_compute_forwarding_rule" "asia_esp" {
+  name = "asia-esp"
+  region = "asia-northeast3"
+  ip_protocol = "ESP"
+  ip_address = google_compute_address.asia_external_ip.address
+  target = google_compute_vpn_gateway.asia_gateway.self_link
+}
+
+resource "google_compute_forwarding_rule" "asia_udp500" {
+  name = "asia-udp500"
+  region = "asia-northeast3"
+  ip_protocol = "UDP"
+  port_range = "500"
+  ip_address = google_compute_address.asia_external_ip.address
+  target = google_compute_vpn_gateway.asia_gateway.self_link
+}
+
+resource "google_compute_forwarding_rule" "asia_udp4500" {
+  name = "asia-udp4500"
+  region = "asia-northeast3"
+  ip_protocol = "UDP"
+  port_range = "4500"
+  ip_address = google_compute_address.asia_external_ip.address
+  target = google_compute_vpn_gateway.asia_gateway.self_link
+}   
+
+# Tunnel from HQ to Asia
 resource "google_compute_vpn_tunnel" "tunnel2" {
-  name                            = "hq-vpn-tunnel2"
-  region                          = "asia-northeast3"
-  vpn_gateway                     = google_compute_ha_vpn_gateway.hq_gateway.id
-  peer_external_gateway           = google_compute_external_vpn_gateway.external_gateway.id
-  peer_external_gateway_interface = 0
-  shared_secret                   = "a secret message"
-  router                          = " ${google_compute_router.router1.id}"
-  vpn_gateway_interface           = 1
+  name = "hq-vpn-tunnel2"
+  region = "europe-west1"
+  target_vpn_gateway = google_compute_vpn_gateway.hq_gateway.id
+  peer_ip = google_compute_address.asia_external_ip.address
+  shared_secret = data.google_secret_manager_secret_version.vpn_secret.secret_data
+  ike_version = 2
+
+  local_traffic_selector = ["10.155.8.0/24"]
+  remote_traffic_selector = ["192.168.5.0/24"]
+
+  depends_on = [google_compute_forwarding_rule.europe_esp, google_compute_forwarding_rule.europe_udp500, google_compute_forwarding_rule.europe_udp4500]
 }
 
-resource "google_compute_router_interface" "router1_interface1" {
-  name       = "router1-interface1"
-  router     = google_compute_router.router1.name
-  region     = "asia-northeast3"
-  ip_range   = "169.254.0.1/30"
-  vpn_tunnel = google_compute_vpn_tunnel.tunnel1.name
+# Route for HQ to Asia
+resource "google_compute_route" "hq_to_asia_route" {
+  depends_on = [google_compute_vpn_tunnel.tunnel2]
+  name = "hq-to-asia-route"
+  network = google_compute_network.europe-vpc-network.id
+  dest_range = "192.168.5.0/24"
+  next_hop_vpn_tunnel = google_compute_vpn_tunnel.tunnel2.id
 }
 
-resource "google_compute_router_peer" "router1_peer1" {
-  name                      = "router1-peer1"
-  router                    = google_compute_router.router1.name
-  region                    = "asia-northeast3"
-  peer_ip_address           = "169.254.0.2"
-  peer_asn                  = 64515
-  advertised_route_priority = 100
-  interface                 = google_compute_router_interface.router1_interface1.name
+# Forwarding Rules for HQ VPN
+resource "google_compute_forwarding_rule" "europe_esp" {
+  name = "europe-esp"
+  region = "europe-west1"
+  ip_protocol = "ESP"
+  ip_address = google_compute_address.europe_external_ip.address
+  target = google_compute_vpn_gateway.hq_gateway.self_link
 }
 
-resource "google_compute_router_interface" "router1_interface2" {
-  name       = "router1-interface2"
-  router     = google_compute_router.router1.name
-  region     = "asia-northeast3"
-  ip_range   = "169.254.1.1/30"
-  vpn_tunnel = google_compute_vpn_tunnel.tunnel2.name
+resource "google_compute_forwarding_rule" "europe_udp500" {
+  name = "europe-udp500"
+  region = "europe-west1"
+  ip_protocol = "UDP"
+  port_range = "500"
+  ip_address = google_compute_address.europe_external_ip.address
+  target = google_compute_vpn_gateway.hq_gateway.self_link
 }
 
-resource "google_compute_router_peer" "router1_peer2" {
-  name                      = "router1-peer2"
-  router                    = google_compute_router.router1.name
-  region                    = "asia-northeast3"
-  peer_ip_address           = "169.254.1.2"
-  peer_asn                  = 64515
-  advertised_route_priority = 100
-  interface                 = google_compute_router_interface.router1_interface2.name
+resource "google_compute_forwarding_rule" "europe_udp4500" {
+  name = "europe-udp4500"
+  region = "europe-west1"
+  ip_protocol = "UDP"
+  port_range = "4500"
+  ip_address = google_compute_address.europe_external_ip.address
+  target = google_compute_vpn_gateway.hq_gateway.self_link
 }
