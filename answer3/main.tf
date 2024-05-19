@@ -11,7 +11,7 @@ provider "google" {
   # Configuration options
 
   project = "love-terraform-project"
-  credentials = "love-terraform-project-cac637d5eadc.json"
+  credentials = "love-terraform-project-f30ae0f1b12a.json"
 }
 
 # Creating VPC Networks
@@ -93,7 +93,7 @@ resource "google_compute_instance" "instance" {
   } 
     }
   metadata = {
-    startup-script = file("${path.module}/remo-script.sh")
+    startup-script = file("${path.module}/startup.sh")
 
  }
 
@@ -147,9 +147,9 @@ resource "google_compute_address" "europe_external_ip" {
 }
 
 # VPN Tunnel from Asia to HQ
-data "google_secret_manager_secret_version" "vpn_secret" {
-  secret = "vpn-shared-secret"
-  version = "latest"
+data "google_secret_manager_secret" "vpn_secret" {
+  secret_id = "vpn-shared-secret"
+  
 }
 
 resource "google_compute_vpn_tunnel" "tunnel1" {
@@ -157,7 +157,7 @@ resource "google_compute_vpn_tunnel" "tunnel1" {
   region = "asia-northeast3"
   vpn_gateway = google_compute_vpn_gateway.asia_gateway.id
   peer_ip = google_compute_address.europe_external_ip.address
-  shared_secret = data.google_secret_manager_secret_version.vpn_secret.secret_data
+  shared_secret = data.google_secret_manager_secret.vpn_secret.id
   ike_version = 2
   
   local_traffic_selector = ["192.168.5.0/24"]
@@ -208,7 +208,7 @@ resource "google_compute_vpn_tunnel" "tunnel2" {
   region = "europe-west1"
   target_vpn_gateway = google_compute_vpn_gateway.hq_gateway.id
   peer_ip = google_compute_address.asia_external_ip.address
-  shared_secret = data.google_secret_manager_secret_version.vpn_secret.secret_data
+  shared_secret = data.google_secret_manager_secret.vpn_secret.id
   ike_version = 2
 
   local_traffic_selector = ["10.155.8.0/24"]

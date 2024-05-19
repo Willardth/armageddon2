@@ -11,9 +11,9 @@ provider "google" {
   # Configuration options
 
   project = "love-terraform-project"
-  region = "asia-southeast1"
-  zone = "asia-southeast1-b"
-  credentials = "love-terraform-project-cac637d5eadc.json"
+  region = "us-central1"
+  zone = "us-central1-b"
+  credentials = "love-terraform-project-f30ae0f1b12a.json"
 }
 
 resource "google_compute_network" "vpc-network" {
@@ -29,51 +29,71 @@ resource "google_compute_subnetwork" "asia-subnet" {
   name = "terraform-vpc-subnet"
   network = google_compute_network.vpc-network.name
   ip_cidr_range = "10.244.0.0/24"
-  region = "asia-southeast1"
+  region = "us-central1"
+  private_ip_google_access = true
 }
 
-resource "google_compute_firewall" "http-rule" {
-  name = "http-rule"
-  network = google_compute_network.vpc-network.name
-  direction = "INGRESS"
-  priority = 1000
-  target_tags = ["http-server"]
+resource "google_compute_firewall" "http" {
+  name    = "allow-http"
+  network = google_compute_network.vpc-network.self_link
+
   allow {
-    ports= ["80"]
     protocol = "tcp"
+    ports    = ["80"]
   }
-  source_ranges =  ["0.0.0.0/0"]
+  source_ranges = ["0.0.0.0/0"]
+  priority      = 100
 }
 
-resource "google_compute_instance" "asia-instance" {
+resource "google_compute_firewall" "https" {
+  name    = "allow-https"
+  network = google_compute_network.vpc-network.self_link
+
+  allow {
+    protocol = "tcp"
+    ports    = ["443"]
+  }
+  source_ranges = ["0.0.0.0/0"]
+  priority      = 100
+}
+
+resource "google_compute_instance" "us-instance" {
   project = "love-terraform-project"
-  name = "asia-instance"
-  machine_type = "e2-micro"
-  zone = "asia-southeast1-b"
-  tags = ["http-server"]
+  name = "us-instance"
+  machine_type = "e2-medium"
+  zone = "us-central1-b"
+  
+
   boot_disk {
     initialize_params {
-      image = "ubuntu-os-cloud/ubuntu-2004-lts"
+      image = "debian-cloud/debian-12"
+      size = 10
     }
   }
   
   network_interface {
     network = google_compute_network.vpc-network.name
     subnetwork = google_compute_subnetwork.asia-subnet.name
-    
     access_config {
     //Ephemeral IP
   } 
-    }
-  metadata = {
-    startup-script = file("${path.module}/remo-script.sh")
+  }
 
- }
+  tags = ["http-server"]
+  metadata_startup_script = file("startup.sh")
+
+ 
+  depends_on = [google_compute_network.vpc-network, google_compute_subnetwork.asia-subnet]
+
 }
 
 output "internal_ip" {
-    value = google_compute_instance.asia-instance.network_interface[0].access_config[0].nat_ip
+    value = google_compute_instance.us-instance.network_interface[0].network_ip
   }
 output "external_ip" {
-    value = google_compute_instance.asia-instance.network_interface[0].access_config[0].nat_ip
+    value = google_compute_instance.us-instance.network_interface[0].access_config[0].nat_ip
   }
+
+output "website_url" {
+  value = "http://${google_compute_instance.us-instance.network_interface[0].access_config[0].nat_ip}"
+}
